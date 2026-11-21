@@ -6,6 +6,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.down
@@ -25,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import com.example.engine.CombatPhase
 import com.example.engine.CombatState
+import com.example.engine.PriorityHolder
 import com.example.model.AdventureCatalog
 import com.example.model.CardCatalog
 import com.example.model.CardTemplate
@@ -1569,6 +1573,209 @@ class ExampleRobolectricTest {
     composeTestRule.waitForIdle()
     assertEquals("hc_mystics", playedCardId)
   }
+
+  @Test
+  fun `combatScreen rightManaActionDial aligns with background orb and never overlaps or clips on 16_9 and 20_9`() {
+    val adv = AdventureCatalog.getAdventure("adv_demacia_outskirts")
+    val node = adv.mapNodes.first { it.id == "d_fight_1a" }
+    val cithria = CardCatalog.getCard("card_cithria")
+    val mysticShot = CardCatalog.getCard("card_mystic_shot")
+    val state = CombatState(
+      encounterNode = node,
+      adventure = adv,
+      championId = "champ_anivia",
+      starLevel = 6,
+      equippedRelics = emptyList(),
+      activePowers = emptyList(),
+      mutators = emptyList(),
+      round = 1,
+      playerNexusHp = 40,
+      playerMaxHp = 40,
+      enemyNexusHp = 20,
+      enemyMaxHp = 20,
+      playerMana = 3,
+      playerMaxMana = 3,
+      playerSpellMana = 1,
+      enemyMana = 1,
+      enemyMaxMana = 1,
+      enemySpellMana = 0,
+      playerHand = listOf(
+        com.example.model.HandCardInstance("hc_1", cithria, effectiveCost = cithria.cost),
+        com.example.model.HandCardInstance("hc_2", mysticShot, effectiveCost = mysticShot.cost)
+      )
+    )
+
+    val viewWidth = androidx.compose.runtime.mutableStateOf(569.dp)
+    val viewHeight = androidx.compose.runtime.mutableStateOf(320.dp)
+
+    composeTestRule.setContent {
+      PathOfChampionsTheme {
+        Box(modifier = Modifier.size(width = viewWidth.value, height = viewHeight.value)) {
+          com.example.ui.screens.CombatScreen(
+            combat = state,
+            revivesRemaining = 1,
+            onPlayCard = {},
+            onPlayTargetedCard = { _, _ -> },
+            onEnterAttack = {},
+            onCancelAttack = {},
+            onToggleAttacker = {},
+            onCommitAttack = {},
+            onSelectEnemyAttackerForBlock = {},
+            onAssignBlocker = { _, _ -> },
+            onRemoveBlocker = {},
+            onCommitBlock = {},
+            onResolveStack = {},
+            onPassTurn = {},
+            onVictoryContinue = {},
+            onUseRevive = {},
+            onAcceptDefeat = {},
+            onAbandonRun = {}
+          )
+        }
+      }
+    }
+
+    fun assertNoOverlap(a: androidx.compose.ui.unit.DpRect, b: androidx.compose.ui.unit.DpRect, msg: String) {
+      val overlapsX = a.left < b.right && b.left < a.right
+      val overlapsY = a.top < b.bottom && b.top < a.bottom
+      assertTrue("$msg (a=$a, b=$b)", !(overlapsX && overlapsY))
+    }
+
+    listOf(569.dp to 320.dp, 850.dp to 390.dp).forEach { (w, h) ->
+      composeTestRule.runOnUiThread {
+        viewWidth.value = w
+        viewHeight.value = h
+      }
+      composeTestRule.waitForIdle()
+
+      val ctaBounds = composeTestRule.onNodeWithTag("end_round_button").getUnclippedBoundsInRoot()
+      val enemyManaBounds = composeTestRule.onNodeWithTag("enemy_mana_text").getUnclippedBoundsInRoot()
+      val playerManaBounds = composeTestRule.onNodeWithTag("player_mana_text").getUnclippedBoundsInRoot()
+      val spellBadgeBounds = composeTestRule.onNodeWithTag("player_spell_mana_badge").getUnclippedBoundsInRoot()
+      val handCardBounds = composeTestRule.onNodeWithTag("hand_card_card_mystic_shot").getUnclippedBoundsInRoot()
+
+      val scaleDp = maxOf(w.value / 1076f, h.value / 614f)
+      val offsetX = (w - (1076f * scaleDp).dp) / 2f
+      val expectedOrbCenterX = offsetX + (927f * scaleDp).dp
+      val actualCtaCenterX = (ctaBounds.left + ctaBounds.right) / 2f
+      val centerDiff = kotlin.math.abs((actualCtaCenterX - expectedOrbCenterX).value)
+      assertTrue("CTA center ($actualCtaCenterX) should align with painted orb ($expectedOrbCenterX) on ${w}x${h}", centerDiff <= 4f)
+
+      assertTrue("enemyManaBounds clipped on ${w}x${h}: $enemyManaBounds", enemyManaBounds.top >= 0.dp && enemyManaBounds.right <= w)
+      assertTrue("spellBadgeBounds clipped on ${w}x${h}: $spellBadgeBounds", spellBadgeBounds.bottom <= handCardBounds.top)
+      assertNoOverlap(ctaBounds, enemyManaBounds, "CTA overlaps enemy mana on ${w}x${h}")
+      assertNoOverlap(ctaBounds, playerManaBounds, "CTA overlaps player mana on ${w}x${h}")
+      assertNoOverlap(ctaBounds, spellBadgeBounds, "CTA overlaps player spell mana badge on ${w}x${h}")
+    }
+  }
+
+  @Test
+  fun `manaUi displays up to 12 regular gems milestone bonus and spell vs unit cost previews cleanly`() {
+    val adv = AdventureCatalog.getAdventure("adv_demacia_outskirts")
+    val node = adv.mapNodes.first { it.id == "d_fight_1a" }
+    val spell4 = com.example.model.HandCardInstance(
+      instanceId = "hc_spell4",
+      template = CardCatalog.getCard("card_mystic_shot"),
+      effectiveCost = 4
+    )
+    val unit4 = com.example.model.HandCardInstance(
+      instanceId = "hc_unit4",
+      template = CardCatalog.getCard("card_cithria"),
+      effectiveCost = 4
+    )
+    val combatState = androidx.compose.runtime.mutableStateOf(
+      CombatState(
+        encounterNode = node,
+        adventure = adv,
+        championId = "champ_anivia",
+        starLevel = 6,
+        equippedRelics = emptyList(),
+        activePowers = emptyList(),
+        mutators = emptyList(),
+        round = 10,
+        playerNexusHp = 40,
+        playerMaxHp = 40,
+        enemyNexusHp = 25,
+        enemyMaxHp = 25,
+        playerMana = 11,
+        playerMaxMana = 12,
+        playerSpellMana = 2,
+        enemyMana = 10,
+        enemyMaxMana = 10,
+        enemySpellMana = 1,
+        playerHand = listOf(spell4, unit4),
+        phase = CombatPhase.MAIN_ACTION_PHASE,
+        priorityHolder = PriorityHolder.PLAYER
+      )
+    )
+
+    composeTestRule.setContent {
+      PathOfChampionsTheme {
+        Box(modifier = Modifier.size(width = 850.dp, height = 390.dp)) {
+          com.example.ui.screens.CombatScreen(
+            combat = combatState.value,
+            revivesRemaining = 1,
+            onPlayCard = {},
+            onEnterAttack = {},
+            onCancelAttack = {},
+            onToggleAttacker = {},
+            onCommitAttack = {},
+            onSelectEnemyAttackerForBlock = {},
+            onAssignBlocker = { _, _ -> },
+            onRemoveBlocker = {},
+            onCommitBlock = {},
+            onResolveStack = {},
+            onPassTurn = {},
+            onVictoryContinue = {},
+            onUseRevive = {},
+            onAcceptDefeat = {},
+            onAbandonRun = {}
+          )
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+
+    // 1. Verify 12-slot regular mana text, milestone bonus badge, and all 12 gems are displayed unclipped
+    composeTestRule.onNodeWithTag("player_mana_text").assertTextEquals("11/12")
+    composeTestRule.onNodeWithTag("player_mana_turn_meta").assertIsDisplayed().assertTextContains("★+2", substring = true)
+    (0 until 12).forEach { idx ->
+      composeTestRule.onNodeWithTag("player_regular_mana_gem_$idx").assertIsDisplayed()
+    }
+    composeTestRule.onNodeWithTag("player_spell_mana_text").assertTextEquals("2")
+
+    // 2. Tap mana plaque to inspect full breakdown dialog
+    composeTestRule.onNodeWithTag("player_mana_plaque").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("mana_detail_dialog").assertIsDisplayed()
+    composeTestRule.onNodeWithText("Đóng").performClick()
+    composeTestRule.waitForIdle()
+
+    // 3. Switch to 3 Regular Mana & 2 Spell Mana -> test Spell 4-cost affordable vs Unit 4-cost unaffordable
+    composeTestRule.runOnUiThread {
+      combatState.value = combatState.value.copy(playerMana = 3, playerMaxMana = 4, playerSpellMana = 2)
+    }
+    composeTestRule.waitForIdle()
+
+    // Expand hand by clicking collapsed card
+    composeTestRule.onNodeWithTag("hand_card_card_cithria").performClick()
+    composeTestRule.waitForIdle()
+
+    // Tap 4-cost Spell -> uses 2 Spell + 2 Regular -> 1 Regular remains, play button ENABLED
+    composeTestRule.onNodeWithTag("hand_card_card_mystic_shot").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("card_mana_breakdown_text")
+      .assertTextContains("2 NL Phép + 2 NL Thường", substring = true)
+      .assertTextContains("Còn 1 NL Thường", substring = true)
+    composeTestRule.onNodeWithTag("confirm_play_card_button").assertIsEnabled()
+
+    // Dismiss inspect overlay and tap 4-cost Unit -> cannot use Spell Mana, play button DISABLED
+    composeTestRule.onNodeWithText("Đóng").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("hand_card_card_cithria").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("card_mana_breakdown_text")
+      .assertTextContains("Không đủ NL Thường", substring = true)
+    composeTestRule.onNodeWithTag("confirm_play_card_button").assertIsNotEnabled()
+  }
 }
-
-

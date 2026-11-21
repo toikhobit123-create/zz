@@ -293,7 +293,7 @@ object CombatEngine {
         val startingMana = (1 +
             loadout.startingManaBonus +
             (if (loadout.starLevel >= 5) 1 else 0) +
-            relics.sumOf { it.startingManaBonus }).coerceIn(1, 10)
+            relics.sumOf { it.startingManaBonus }).coerceIn(1, 3)
 
         val startingSpellMana = if (powers.any { it.id == "pow_sorcery" }) 3 else 0
         val celestialStartMana = if (adventure.mutators.any { it.id == "mut_celestial_might" }) 4 else 1
@@ -402,8 +402,8 @@ object CombatEngine {
             s = s.copy(playerHasAttackToken = true)
         }
 
-        // Power: Dòng Chảy Năng Lượng Hoàn Mỹ
-        if (s.activePowers.any { it.id == "pow_manaflow" }) {
+        // Power: Dòng Chảy Năng Lượng Hoàn Mỹ (+1 ngọc năng lượng khởi đầu trận đấu)
+        if (isGameStart && s.activePowers.any { it.id == "pow_manaflow" }) {
             s = gainPlayerManaGem(s, empty = false, logs, "Dòng Chảy Năng Lượng Hoàn Mỹ")
         }
 
@@ -794,20 +794,22 @@ object CombatEngine {
         val cost = state.effectivePlayCost(card)
         val isSpellLike = card.template.type == CardType.SPELL || card.template.type == CardType.CURSE
 
-        var newMana = state.playerMana
-        var newSpellMana = state.playerSpellMana
+        val maxRegularMana = maxOf(state.playerMaxMana, state.playerMana).coerceIn(1, 10)
+        var newMana = state.playerMana.coerceIn(0, maxRegularMana)
+        var newSpellMana = state.playerSpellMana.coerceIn(0, 3)
         if (isSpellLike) {
-            val spellUsed = minOf(maxOf(0, newSpellMana), cost)
-            newSpellMana = maxOf(0, newSpellMana - spellUsed)
-            newMana = maxOf(0, newMana - (cost - spellUsed))
+            val spellUsed = minOf(newSpellMana, cost)
+            newSpellMana = (newSpellMana - spellUsed).coerceIn(0, 3)
+            newMana = (newMana - (cost - spellUsed)).coerceIn(0, maxRegularMana)
         } else {
-            newMana = maxOf(0, newMana - cost)
+            newMana = (newMana - cost).coerceIn(0, maxRegularMana)
         }
 
         val logs = state.combatLog.toMutableList()
         val itemManaRefill = card.attachedItems.sumOf { it.refillManaOnPlay }
         if (itemManaRefill > 0) {
-            newMana = minOf(state.playerMaxMana, newMana + itemManaRefill)
+            val refillCap = state.playerMaxMana.coerceIn(1, 10)
+            newMana = minOf(refillCap, newMana + itemManaRefill).coerceIn(0, refillCap)
             logs.add("${card.template.name} hồi +$itemManaRefill Năng Lượng.")
         }
 
@@ -3366,10 +3368,12 @@ object CombatEngine {
         val cleanHand = s.playerHand.filterNot { it.isFleeting }
 
         val nextRound = s.round + 1
-        val newPlayerMax = (s.playerMaxMana + 1).coerceIn(1, 10)
-        val newEnemyMax = (s.enemyMaxMana + 1).coerceIn(1, 10)
-        val playerSpellBank = minOf(3, maxOf(0, s.playerSpellMana) + maxOf(0, s.playerMana))
-        val enemySpellBank = minOf(3, maxOf(0, s.enemySpellMana) + maxOf(0, s.enemyMana))
+        val prevPlayerMax = s.playerMaxMana.coerceIn(1, 10)
+        val prevEnemyMax = s.enemyMaxMana.coerceIn(1, 10)
+        val newPlayerMax = (prevPlayerMax + 1).coerceIn(1, 10)
+        val newEnemyMax = (prevEnemyMax + 1).coerceIn(1, 10)
+        val playerSpellBank = minOf(3, s.playerSpellMana.coerceIn(0, 3) + s.playerMana.coerceIn(0, prevPlayerMax))
+        val enemySpellBank = minOf(3, s.enemySpellMana.coerceIn(0, 3) + s.enemyMana.coerceIn(0, prevEnemyMax))
 
         val playerGetsToken = nextRound % 2 == 1
         val roundInitiator = if (playerGetsToken) PriorityHolder.PLAYER else PriorityHolder.ENEMY

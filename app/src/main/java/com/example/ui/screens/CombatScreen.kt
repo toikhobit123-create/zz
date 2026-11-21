@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -98,6 +99,7 @@ import com.example.ui.components.CenterlineScrollButton
 import com.example.ui.components.FilmGrainOverlay
 import com.example.ui.components.FreljordBattlefieldBackground
 import com.example.ui.components.HandCardView
+import com.example.ui.components.ManaConversionVisual
 import com.example.ui.components.PlayerHandOverlay
 import com.example.ui.components.RightManaActionDial
 import com.example.ui.components.SpellSkillEffectOverlay
@@ -175,9 +177,11 @@ fun CombatScreen(
     var showEmotePicker by remember { mutableStateOf(false) }
     var activeEmote by remember { mutableStateOf<CombatEmoteOption?>(null) }
     var showForfeitConfirm by remember { mutableStateOf(false) }
+    var showManaDetailDialog by remember { mutableStateOf(false) }
 
     var pendingTargetCard by remember { mutableStateOf<HandCardInstance?>(null) }
     var pendingFirstUnitId by remember { mutableStateOf<String?>(null) }
+    var dispatchedPlayInstanceId by remember(combat) { mutableStateOf<String?>(null) }
 
     var activeDrag by remember { mutableStateOf<ActiveDragState?>(null) }
     var dragWarningText by remember { mutableStateOf<String?>(null) }
@@ -279,6 +283,73 @@ fun CombatScreen(
             enemyNexusDelta = 0
         } else {
             prevEnemyHp = combat.enemyNexusHp
+        }
+    }
+
+    // Track Mana spending, round-start refill, and round-end Spell Mana conversion animations purely from CombatState truth
+    var prevManaRound by remember { mutableIntStateOf(combat.round) }
+    var prevPlayerMana by remember { mutableIntStateOf(combat.playerMana) }
+    var prevPlayerSpellMana by remember { mutableIntStateOf(combat.playerSpellMana) }
+    var spentRegularIndices by remember { mutableStateOf(IntRange.EMPTY) }
+    var spentSpellIndices by remember { mutableStateOf(IntRange.EMPTY) }
+    val spendPulseProgress = remember { Animatable(0f) }
+    val refillProgress = remember { Animatable(1f) }
+    var conversionVisual by remember { mutableStateOf<ManaConversionVisual?>(null) }
+    var spendAnimSeq by remember { mutableIntStateOf(0) }
+    var roundAnimSeq by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(combat.round, combat.playerMana, combat.playerMaxMana, combat.playerSpellMana) {
+        when {
+            combat.round > prevManaRound -> {
+                val unusedRegular = prevPlayerMana.coerceAtLeast(0)
+                val gainedSpell = (combat.playerSpellMana - prevPlayerSpellMana).coerceAtLeast(0)
+                val discarded = (unusedRegular - gainedSpell).coerceAtLeast(0)
+                spentRegularIndices = IntRange.EMPTY
+                spentSpellIndices = IntRange.EMPTY
+                spendPulseProgress.snapTo(0f)
+                conversionVisual = if (unusedRegular > 0 || gainedSpell > 0) {
+                    ManaConversionVisual(
+                        convertedToSpell = gainedSpell,
+                        discardedExcess = discarded,
+                        previousRegularRemaining = unusedRegular
+                    )
+                } else null
+                roundAnimSeq++
+                refillProgress.snapTo(0.08f)
+                refillProgress.animateTo(1f, tween(durationMillis = 360))
+            }
+            combat.round == prevManaRound && (combat.playerMana < prevPlayerMana || combat.playerSpellMana < prevPlayerSpellMana) -> {
+                spentRegularIndices = if (combat.playerMana < prevPlayerMana) {
+                    combat.playerMana until prevPlayerMana
+                } else IntRange.EMPTY
+                spentSpellIndices = if (combat.playerSpellMana < prevPlayerSpellMana) {
+                    combat.playerSpellMana until prevPlayerSpellMana
+                } else IntRange.EMPTY
+                spendAnimSeq++
+            }
+            combat.round == prevManaRound && combat.playerMana > prevPlayerMana -> {
+                refillProgress.snapTo(0.45f)
+                refillProgress.animateTo(1f, tween(durationMillis = 240))
+            }
+        }
+        prevManaRound = combat.round
+        prevPlayerMana = combat.playerMana
+        prevPlayerSpellMana = combat.playerSpellMana
+    }
+
+    LaunchedEffect(spendAnimSeq) {
+        if (spendAnimSeq > 0) {
+            spendPulseProgress.snapTo(1f)
+            spendPulseProgress.animateTo(0f, tween(durationMillis = 320))
+            spentRegularIndices = IntRange.EMPTY
+            spentSpellIndices = IntRange.EMPTY
+        }
+    }
+
+    LaunchedEffect(roundAnimSeq) {
+        if (roundAnimSeq > 0 && conversionVisual != null) {
+            kotlinx.coroutines.delay(950)
+            conversionVisual = null
         }
     }
 
@@ -473,6 +544,8 @@ fun CombatScreen(
                 pendingFirstUnitId = null
             }
             combat.selectedAttackerForChallenger != null -> onSelectChallengerAttacker(null)
+            showForfeitConfirm -> showForfeitConfirm = false
+            showManaDetailDialog -> showManaDetailDialog = false
             showEmotePicker -> showEmotePicker = false
             showGraveyardDialog -> showGraveyardDialog = false
             showMatchInfoDialog -> showMatchInfoDialog = false
@@ -487,8 +560,12 @@ fun CombatScreen(
     val latestCombat by rememberUpdatedState(combat)
 
     val dispatchTargetedCard: (HandCardInstance, String?) -> Unit = { card, targetId ->
-        lastPlayerTargetHint = card.template.id to targetId
-        onPlayTargetedCard(card.instanceId, targetId)
+        val c = latestCombat
+        if (dispatchedPlayInstanceId != card.instanceId && c.canPlayCard(card)) {
+            dispatchedPlayInstanceId = card.instanceId
+            lastPlayerTargetHint = card.template.id to targetId
+            onPlayTargetedCard(card.instanceId, targetId)
+        }
     }
 
     val triggerCardPlayOrTargeting: (HandCardInstance, Offset?) -> Unit = { card, pointer ->
@@ -661,17 +738,8 @@ fun CombatScreen(
                     draggedUpwardInPlayArea
 
                 if (!c.canPlayCard(card)) {
-                    dragWarningText = when {
-                        c.priorityHolder != PriorityHolder.PLAYER -> "Chờ lượt của đối thủ"
-                        isUnitLike && c.playerBoard.size >= 6 -> "Hàng chờ đã đầy (6/6)"
-                        card.template.spellSpeed == SpellSpeed.FAST && isInCombat && c.playerFastSpellUsedInCombat ->
-                            "Mỗi đợt giao tranh chỉ dùng được 1 bài phép Nhanh!"
-                        card.template.spellSpeed == SpellSpeed.FOCUS && (isInCombat || c.spellStack.isNotEmpty()) ->
-                            "Phép Tập Trung chỉ dùng ngoài giao tranh khi hàng chờ trống!"
-                        card.template.spellSpeed == SpellSpeed.SLOW && (isInCombat || c.spellStack.isNotEmpty()) ->
-                            "Phép Chậm chỉ dùng ngoài giao tranh khi hàng chờ trống!"
-                        else -> "Không thể ra lá ${card.template.name}"
-                    }
+                    val preview = c.previewManaPayment(card)
+                    dragWarningText = preview.blockReason ?: "Không thể ra lá ${card.template.name}"
                 } else if (validZone) {
                     triggerCardPlayOrTargeting(card, pointer)
                     inspectedHandCard = null
@@ -868,6 +936,25 @@ fun CombatScreen(
         val unitTileWidth = minOf(vw(11.0f), unitTileHeight * 0.82f).coerceAtLeast(52.dp)
         val unitGap = vw(1.05f)
 
+        // Exact img_board_arena_bg (1076x614 ContentScale.Crop) geometry for right-side Mana/Action Dial
+        val bgImgW = 1076f
+        val bgImgH = 614f
+        val bgScaleDp = maxOf(maxWidth.value / bgImgW, maxHeight.value / bgImgH)
+        val bgDrawnW = (bgImgW * bgScaleDp).dp
+        val bgOffsetX = (maxWidth - bgDrawnW) / 2f
+        val actionDiameter = (98f * bgScaleDp).dp.coerceIn(48.dp, 80.dp)
+        val dialHeight = (244f * bgScaleDp).dp.coerceIn(136.dp, 202.dp)
+        val dialWidth = (dialHeight * 0.94f).coerceIn(148.dp, 184.dp)
+        val minOrbCenterX = maxOf(maxWidth * 0.72f, actionDiameter / 2f + safeStart + 120.dp)
+        val maxOrbCenterX = (maxWidth - safeEnd - actionDiameter / 2f - 6.dp).coerceAtLeast(minOrbCenterX)
+        val rawOrbCenterX = bgOffsetX + (927f * bgScaleDp).dp
+        val orbCenterX = rawOrbCenterX.coerceIn(minOf(minOrbCenterX, maxOrbCenterX), maxOrbCenterX)
+        val dialEndPadding = (maxWidth - (orbCenterX + actionDiameter / 2f + 6.dp)).coerceAtLeast(safeEnd + 2.dp)
+        val boardEndPadding = maxOf(
+            safeEnd + vw(16.5f),
+            maxWidth - (orbCenterX - actionDiameter * 0.65f)
+        )
+
         // Floating drag preview card sizing (matches expanded hand card size)
         val handCardHeight = vh(39f).coerceIn(142.dp, 196.dp)
         val handCardWidth = handCardHeight * 0.6875f
@@ -1019,6 +1106,10 @@ fun CombatScreen(
         }
 
         val currentDrag = activeDrag
+        val activePreviewCard = (currentDrag as? ActiveDragState.HandCardDrag)?.card
+            ?: activePendingCard
+            ?: inspectedHandCard
+        val activeManaPreview = activePreviewCard?.let { combat.previewManaPayment(it) }
         val playerBenchHighlight = when (currentDrag) {
             is ActiveDragState.HandCardDrag -> {
                 val c = currentDrag.card
@@ -1059,7 +1150,7 @@ fun CombatScreen(
                 .fillMaxSize()
                 .padding(
                     start = safeStart + vw(16.5f),
-                    end = safeEnd + vw(16.5f),
+                    end = boardEndPadding,
                     top = safeTop + vh(boardTopPct),
                     bottom = safeBottom + vh(boardBottomPct)
                 )
@@ -1471,11 +1562,7 @@ fun CombatScreen(
             }
         }
 
-        // LAYER 7: Right-Edge Iconic Circular Pass/Action & Mechanical Mana Dial (above hand layer)
-        val dialHeight = vh(40f).coerceIn(132.dp, 196.dp)
-        val dialWidth = (dialHeight * 1.12f).coerceIn(156.dp, 210.dp)
-        val actionDiameter = (dialHeight * 0.40f).coerceIn(50.dp, 76.dp)
-
+        // LAYER 7: Right-Edge Iconic Circular Pass/Action & Mechanical Mana Dial (aligned over img_board_arena_bg orb)
         RightManaActionDial(
             combat = combat,
             dialWidth = dialWidth,
@@ -1488,9 +1575,16 @@ fun CombatScreen(
             onCommitAttack = onCommitAttack,
             onCommitBlock = onCommitBlock,
             onPassTurn = onPassTurn,
+            manaPreview = activeManaPreview,
+            spentRegularIndices = spentRegularIndices,
+            spentSpellIndices = spentSpellIndices,
+            spendAnimProgress = spendPulseProgress.value,
+            refillProgress = refillProgress.value,
+            conversionVisual = conversionVisual,
+            onManaPlaqueClick = { showManaDetailDialog = true },
             modifier = Modifier
                 .align(Alignment.CenterEnd)
-                .padding(end = safeEnd + 4.dp)
+                .padding(end = dialEndPadding)
                 .zIndex(38f)
         )
 
@@ -1758,6 +1852,27 @@ fun CombatScreen(
             }
         }
 
+        // Card Cost & Spell/Regular Payment Preview Pill when dragging or targeting a card
+        val dragOrTargetCard = (currentDrag as? ActiveDragState.HandCardDrag)?.card ?: activePendingCard
+        val dragOrTargetPreview = dragOrTargetCard?.let { combat.previewManaPayment(it) }
+        AnimatedVisibility(
+            visible = inspectedHandCard == null && dragOrTargetCard != null && dragOrTargetPreview != null,
+            enter = fadeIn(tween(110)),
+            exit = fadeOut(tween(160)),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = safeTop + vh(if (promptMessage != null) 15.5f else 8.5f))
+                .zIndex(74f)
+        ) {
+            if (dragOrTargetCard != null && dragOrTargetPreview != null) {
+                CardManaPreviewBanner(
+                    cardName = dragOrTargetCard.template.name,
+                    preview = dragOrTargetPreview,
+                    descFontSize = descFontSize
+                )
+            }
+        }
+
         // Drag Warning Toast
         AnimatedVisibility(
             visible = dragWarningText != null,
@@ -1870,18 +1985,20 @@ fun CombatScreen(
 
         // Hand Card Inspect / Quick-Play Overlay
         inspectedHandCard?.let { card ->
+            val inspectPreview = combat.previewManaPayment(card)
             HandCardInspectOverlay(
                 card = card,
-                canPlay = combat.canPlayCard(card),
-                effectiveCost = combat.effectivePlayCost(card),
+                canPlay = inspectPreview.canPlay,
+                effectiveCost = inspectPreview.cardCost,
                 detailOnly = inspectHandDetailOnly,
                 minWidth = vw(28f),
-                maxWidth = vw(40f),
+                maxWidth = vw(42f),
                 buttonHeight = maxOf(48.dp, vh(7f)),
-                offsetY = -vh(6f),
+                offsetY = -vh(5f),
                 padH = vw(1.2f),
                 padV = vh(1f),
                 descFontSize = descFontSize,
+                manaPreview = inspectPreview,
                 onPlay = {
                     triggerCardPlayOrTargeting(card, null)
                     inspectedHandCard = null
@@ -1951,6 +2068,9 @@ fun CombatScreen(
     }
     if (showMatchInfoDialog) {
         MatchInfoDialog(combat = combat, onDismiss = { showMatchInfoDialog = false })
+    }
+    if (showManaDetailDialog) {
+        ManaDetailDialog(combat = combat, onDismiss = { showManaDetailDialog = false })
     }
     if (showForfeitConfirm) {
         ForfeitConfirmDialog(

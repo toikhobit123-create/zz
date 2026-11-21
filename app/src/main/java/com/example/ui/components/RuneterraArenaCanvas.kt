@@ -17,6 +17,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -48,6 +49,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -64,12 +66,14 @@ import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -83,6 +87,7 @@ import kotlin.math.roundToInt
 import com.example.R
 import com.example.engine.CombatPhase
 import com.example.engine.CombatState
+import com.example.engine.ManaPaymentPreview
 import com.example.engine.PriorityHolder
 import com.example.ui.theme.ArcaneCyan
 import com.example.ui.theme.CinzelFontFamily
@@ -99,7 +104,6 @@ import com.example.ui.theme.MutedSilver
 import com.example.ui.theme.ObsidianBg
 import com.example.ui.theme.ObsidianSurface
 import com.example.ui.theme.ParchmentWhite
-import com.example.ui.theme.SpellManaCyan
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -812,12 +816,25 @@ fun StackedDeckPile(
     }
 }
 
+data class ManaConversionVisual(
+    val convertedToSpell: Int,
+    val discardedExcess: Int,
+    val previousRegularRemaining: Int
+)
+
+private val SpellVioletCore = Color(0xFFEDE9FE)
+private val SpellVioletBright = Color(0xFFA78BFA)
+private val SpellVioletDeep = Color(0xFF5B21B6)
+private val SpellVioletBorder = Color(0xFFDDD6FE)
+private val SpellVioletEmptyTop = Color(0xFF241B3E)
+private val SpellVioletEmptyBot = Color(0xFF120C24)
+
 /**
  * Iconic Right-Edge Circular Pass/Action & Mechanical Mana Dial matching LoR Path of Champions.
  * Displays Enemy Mana (e.g. 3/10) + Spell Mana sockets on the top arc,
  * Attack Token sword icon docked on the upper-left shoulder,
- * Player Mana (e.g. 4/10) + segmented glowing blue crystal bars + 3 Spell Mana gems on the bottom arc,
- * and the tactile royal-blue circular PASS / ATTACK / BLOCK / OK button on the right centerline.
+ * Player Mana (up to 12 with Champion milestones) + segmented glowing crystal bars + 3 violet Spell Mana gems on the bottom arc,
+ * and the tactile circular PASS / ATTACK / BLOCK / OK button on the right centerline.
  */
 @Composable
 fun RightManaActionDial(
@@ -832,7 +849,15 @@ fun RightManaActionDial(
     onCommitAttack: () -> Unit,
     onCommitBlock: () -> Unit,
     onPassTurn: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showBackdropHousing: Boolean = false,
+    manaPreview: ManaPaymentPreview? = null,
+    spentRegularIndices: IntRange = IntRange.EMPTY,
+    spentSpellIndices: IntRange = IntRange.EMPTY,
+    spendAnimProgress: Float = 0f,
+    refillProgress: Float = 1f,
+    conversionVisual: ManaConversionVisual? = null,
+    onManaPlaqueClick: (() -> Unit)? = null
 ) {
     val isPlayerPriority = combat.priorityHolder == PriorityHolder.PLAYER
     val pulseTransition = rememberInfiniteTransition(label = "dial_pulse")
@@ -844,6 +869,15 @@ fun RightManaActionDial(
             repeatMode = RepeatMode.Reverse
         ),
         label = "dial_btn_pulse"
+    )
+    val previewPulseAlpha by pulseTransition.animateFloat(
+        initialValue = 0.65f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(550),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "mana_preview_pulse"
     )
 
     val (btnLabel, btnTag, btnAction) = when {
@@ -910,142 +944,181 @@ fun RightManaActionDial(
         combat.spellStack.isEmpty() &&
         combat.playerBoard.any { it.canAttack }
 
-    val showAttackTokenOnShoulder = combat.playerHasAttackToken || combat.enemyHasAttackToken
+    val plaqueWidth = (dialWidth - 46.dp).coerceIn(96.dp, 128.dp)
+    val plaqueEndInset = 6.dp
+    val crystalHeight = (dialHeight * 0.056f).coerceIn(7.dp, 10.dp)
+
+    val enemyTotalSlots = combat.displayEnemyManaSlots
+    val enemyCrystalGap = if (enemyTotalSlots > 10) 0.9.dp else 1.2.dp
+    val enemyCrystalW = ((plaqueWidth - 46.dp) / enemyTotalSlots.toFloat() - enemyCrystalGap).coerceIn(2.1.dp, 4.2.dp)
+
+    val playerTotalSlots = combat.displayRegularManaSlots
+    val playerCrystalGap = if (playerTotalSlots > 10) 0.9.dp else 1.2.dp
+    val playerCrystalW = ((plaqueWidth - 46.dp) / playerTotalSlots.toFloat() - playerCrystalGap).coerceIn(2.1.dp, 4.2.dp)
 
     Box(
         modifier = modifier.size(width = dialWidth, height = dialHeight),
         contentAlignment = Alignment.CenterEnd
     ) {
-        // Mechanical Curved Dark-Stone & Gold Housing behind the left side of the dial
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            if (size.width <= 1f || size.height <= 1f) return@Canvas
-            val btnRadius = actionDiameter.toPx() * 0.5f
-            val center = Offset(size.width - btnRadius - 6.dp.toPx(), size.height * 0.5f)
-            val outerR = minOf(size.height * 0.48f, btnRadius * 2.15f)
-            val innerR = btnRadius * 0.96f
-
-            // Dark-obsidian mechanical crescent wrapping left of the center button
-            val housingLeft = maxOf(26.dp.toPx(), center.x - outerR * 1.25f)
-            val housingRight = minOf(size.width - 2.dp.toPx(), center.x + outerR * 0.35f)
-            val housingPath = Path().apply {
-                addArc(
-                    oval = androidx.compose.ui.geometry.Rect(
-                        housingLeft,
-                        center.y - outerR,
-                        housingRight,
-                        center.y + outerR
-                    ),
-                    startAngleDegrees = 90f,
-                    sweepAngleDegrees = 180f
+        if (showBackdropHousing) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                if (size.width <= 1f || size.height <= 1f) return@Canvas
+                val btnRadius = actionDiameter.toPx() * 0.5f
+                val center = Offset(size.width - btnRadius - 6.dp.toPx(), size.height * 0.5f)
+                val outerR = minOf(size.height * 0.48f, btnRadius * 2.15f)
+                val innerR = btnRadius * 0.96f
+                val housingLeft = maxOf(26.dp.toPx(), center.x - outerR * 1.25f)
+                val housingRight = minOf(size.width - 2.dp.toPx(), center.x + outerR * 0.35f)
+                val housingPath = Path().apply {
+                    addArc(
+                        oval = androidx.compose.ui.geometry.Rect(
+                            housingLeft,
+                            center.y - outerR,
+                            housingRight,
+                            center.y + outerR
+                        ),
+                        startAngleDegrees = 90f,
+                        sweepAngleDegrees = 180f
+                    )
+                    lineTo(center.x, center.y - innerR)
+                    lineTo(center.x, center.y + innerR)
+                    close()
+                }
+                drawPath(
+                    path = housingPath,
+                    brush = Brush.verticalGradient(
+                        colors = listOf(Color(0xFF131D30), Color(0xFF1E2D47), Color(0xFF0A111F))
+                    )
                 )
-                lineTo(center.x, center.y - innerR)
-                lineTo(center.x, center.y + innerR)
-                close()
+                drawPath(path = housingPath, color = HextechGold, style = Stroke(width = 2.dp.toPx()))
             }
-            drawPath(
-                path = housingPath,
-                brush = Brush.verticalGradient(
-                    colors = listOf(Color(0xFF131D30), Color(0xFF1E2D47), Color(0xFF0A111F))
-                )
-            )
-            drawPath(
-                path = housingPath,
-                color = HextechGold,
-                style = Stroke(width = 2.4.dp.toPx())
-            )
-            drawPath(
-                path = housingPath,
-                color = Color(0xFF070C15),
-                style = Stroke(width = 1.dp.toPx())
-            )
-
-            // Horizontal gold centerline accent feeding into the dial
-            drawLine(
-                color = HextechGold,
-                start = Offset(0f, center.y),
-                end = Offset(center.x - btnRadius, center.y),
-                strokeWidth = 3.dp.toPx()
-            )
         }
 
-        val dialArcEndInset = actionDiameter * 0.62f + 6.dp
-        val dialVerticalInset = (dialHeight * 0.04f).coerceIn(4.dp, 8.dp)
+        // TOP ARC PLAQUE: Opaque carved dark-obsidian plate covering background enemy dial + up to 12 crystals + 3 violet spell gems
+        val plaqueTapModifier = if (onManaPlaqueClick != null) {
+            Modifier
+                .pointerInput(onManaPlaqueClick) {
+                    detectTapGestures { onManaPlaqueClick() }
+                }
+                .semantics(mergeDescendants = false) {
+                    onClick(label = "Chi tiết Năng Lượng") {
+                        onManaPlaqueClick()
+                        true
+                    }
+                }
+        } else Modifier
 
-        // TOP ARC: Enemy Mana Counter (always X/10) + 10-slot Crystal Bar + 3 Spell Mana Sockets
+        val enemySpellMana = combat.enemySpellMana.coerceIn(0, 3)
+        val enemyPlaqueShape = RoundedCornerShape(topStart = 10.dp, bottomStart = 8.dp, topEnd = 12.dp, bottomEnd = 4.dp)
         Column(
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(end = dialArcEndInset, top = dialVerticalInset),
+                .padding(end = plaqueEndInset, top = 1.dp)
+                .width(plaqueWidth)
+                .clip(enemyPlaqueShape)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(Color(0xF5192232), Color(0xF50B111B))
+                    )
+                )
+                .border(1.2.dp, Color(0xFFC49742), enemyPlaqueShape)
+                .then(plaqueTapModifier)
+                .padding(horizontal = 5.dp, vertical = 2.dp),
             horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+            verticalArrangement = Arrangement.spacedBy(1.dp)
         ) {
-            // 3 Enemy Spell Mana Sockets tucked along upper curve + spell mana count
-            val enemySpellMana = combat.enemySpellMana.coerceIn(0, 3)
             Row(
-                modifier = Modifier.padding(end = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val enemySpellFont = (descFontSize.value * 0.78f).coerceIn(8.5f, 11f).sp
                 Text(
                     text = "$enemySpellMana",
                     style = tabularStatStyle(
-                        (descFontSize.value * 0.80f).coerceAtLeast(9f).sp,
-                        if (enemySpellMana > 0) ArcaneCyan else MutedSilver
+                        enemySpellFont,
+                        if (enemySpellMana > 0) SpellVioletBright else MutedSilver
                     ),
+                    lineHeight = enemySpellFont,
+                    maxLines = 1,
+                    softWrap = false,
                     modifier = Modifier.testTag("enemy_spell_mana_text")
+                )
+                Text(
+                    text = "/3",
+                    fontFamily = JetBrainsMonoFamily,
+                    fontSize = (enemySpellFont.value * 0.78f).coerceAtLeast(7f).sp,
+                    lineHeight = enemySpellFont,
+                    color = MutedSilver.copy(alpha = 0.75f),
+                    maxLines = 1,
+                    softWrap = false
                 )
                 repeat(3) { idx ->
                     val filled = idx < enemySpellMana
                     Box(
                         modifier = Modifier
-                            .size(8.dp)
+                            .size(7.dp)
                             .clip(CircleShape)
-                            .background(if (filled) SpellManaCyan else Color(0xFF1B2E47))
-                            .border(1.dp, if (filled) ArcaneCyan else HextechGold.copy(alpha = 0.72f), CircleShape)
+                            .background(
+                                if (filled) {
+                                    Brush.radialGradient(listOf(SpellVioletCore, SpellVioletBright, SpellVioletDeep))
+                                } else {
+                                    Brush.radialGradient(listOf(SpellVioletEmptyTop, SpellVioletEmptyBot))
+                                }
+                            )
+                            .border(
+                                1.dp,
+                                if (filled) SpellVioletBorder else HextechGold.copy(alpha = 0.65f),
+                                CircleShape
+                            )
+                            .testTag("enemy_spell_mana_gem_$idx")
                     )
                 }
             }
 
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
+                val enemyManaFont = (statFontSize.value * 0.84f).coerceIn(10f, 13.5f).sp
                 Text(
-                    text = "${combat.enemyMana}/10",
+                    text = "${combat.enemyMana}/$enemyTotalSlots",
                     style = tabularStatStyle(
-                        fontSize = (statFontSize.value * 0.88f).coerceIn(10.5f, 14.5f).sp,
+                        fontSize = enemyManaFont,
                         color = ParchmentWhite
                     ),
+                    lineHeight = enemyManaFont,
+                    maxLines = 1,
+                    softWrap = false,
                     modifier = Modifier.testTag("enemy_mana_text")
                 )
-                // 10-Slot Enemy Mana Crystals (lit crimson -> unlocked empty -> locked dark)
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(1.dp),
+                    horizontalArrangement = Arrangement.spacedBy(enemyCrystalGap),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val maxEnemy = combat.enemyMaxMana.coerceIn(1, 10)
+                    val maxEnemy = maxOf(combat.enemyMaxMana, combat.enemyMana).coerceIn(1, enemyTotalSlots)
                     val currentEnemy = combat.enemyMana.coerceIn(0, maxEnemy)
-                    repeat(10) { idx ->
+                    repeat(enemyTotalSlots) { idx ->
                         val filled = idx < currentEnemy
                         val unlockedEmpty = idx in currentEnemy until maxEnemy
                         Box(
                             modifier = Modifier
-                                .width(2.8.dp)
-                                .height(8.dp)
+                                .width(enemyCrystalW)
+                                .height(crystalHeight)
                                 .clip(RoundedCornerShape(1.5.dp))
                                 .background(
                                     when {
                                         filled -> CrimsonNexus
-                                        unlockedEmpty -> Color(0xFF253A59)
-                                        else -> Color(0xFF0A111C)
+                                        unlockedEmpty -> Color(0xFF281924)
+                                        else -> Color(0xFF070C14)
                                     }
                                 )
                                 .border(
-                                    0.6.dp,
+                                    0.7.dp,
                                     when {
                                         filled -> Color(0xFFFDA4AF)
-                                        unlockedEmpty -> Color(0xFF6B8BB8)
-                                        else -> Color(0xFF263347)
+                                        unlockedEmpty -> Color(0xFF6B3E4B)
+                                        else -> Color(0xFF1F2B3D)
                                     },
                                     RoundedCornerShape(1.5.dp)
                                 )
@@ -1055,7 +1128,7 @@ fun RightManaActionDial(
             }
         }
 
-        // UPPER-LEFT SHOULDER: Cancel Attack X button (rendered alongside Attack Token without overlap)
+        // SHOULDER: Cancel Attack X button (rendered alongside Attack Token without overlap)
         if (combat.phase == CombatPhase.COMBAT_DECLARE_ATTACK_PHASE) {
             val cancelYOffset = if (combat.enemyHasAttackToken && !combat.playerHasAttackToken) {
                 dialHeight * 0.27f
@@ -1085,13 +1158,11 @@ fun RightManaActionDial(
             }
         }
 
-        // Glowing Orange-Gold Attack Token Sword Icon (always visible so token never disappears in attack phase)
+        // Glowing Orange-Gold Attack Token Sword Icon
         run {
             val isPlayerToken = combat.playerHasAttackToken
             val isEnemyToken = combat.enemyHasAttackToken
             val tokenScale = if (isPlayerToken || isEnemyToken) pulseScale else 1f
-            // Dock the glowing Attack Sword directly on the attacker's side:
-            // Lower-left for Player's attack turn, Upper-left for Enemy's attack turn
             val verticalOffset = when {
                 isPlayerToken -> dialHeight * 0.26f
                 isEnemyToken -> -dialHeight * 0.26f
@@ -1132,7 +1203,7 @@ fun RightManaActionDial(
             Column(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .offset(x = (-18).dp, y = verticalOffset)
+                    .offset(x = (-14).dp, y = verticalOffset)
                     .graphicsLayer {
                         scaleX = tokenScale
                         scaleY = tokenScale
@@ -1151,13 +1222,13 @@ fun RightManaActionDial(
                 verticalArrangement = Arrangement.spacedBy(1.dp)
             ) {
                 Box(
-                    modifier = Modifier.size(42.dp),
+                    modifier = Modifier.size(40.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     if (isPlayerToken || isEnemyToken) {
                         Box(
                             modifier = Modifier
-                                .size(42.dp)
+                                .size(40.dp)
                                 .clip(CircleShape)
                                 .background(
                                     Brush.radialGradient(
@@ -1168,17 +1239,16 @@ fun RightManaActionDial(
                     }
                     Box(
                         modifier = Modifier
-                            .size(38.dp)
+                            .size(36.dp)
                             .clip(CircleShape)
                             .background(emblemBg)
                             .border(2.2.dp, borderStrokeColor, CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
                         if (isPlayerToken || isEnemyToken) {
-                            // Sharp gleaming Sword silhouette pointing toward target side
                             Canvas(
                                 modifier = Modifier
-                                    .size(26.dp)
+                                    .size(24.dp)
                                     .graphicsLayer {
                                         rotationZ = if (isPlayerToken) -35f else 145f
                                     }
@@ -1196,7 +1266,6 @@ fun RightManaActionDial(
                                     close()
                                 }
                                 drawPath(bladePath, bladeColor)
-                                // Fuller shine down center of blade
                                 drawLine(
                                     color = if (isPlayerToken) Color(0xFFFFE082) else Color(0xFFFCA5A5),
                                     start = Offset(sw * 0.50f, sh * 0.16f),
@@ -1204,7 +1273,6 @@ fun RightManaActionDial(
                                     strokeWidth = sw * 0.06f,
                                     cap = StrokeCap.Round
                                 )
-                                // Crossguard
                                 drawLine(
                                     color = hiltColor,
                                     start = Offset(sw * 0.22f, sh * 0.69f),
@@ -1212,7 +1280,6 @@ fun RightManaActionDial(
                                     strokeWidth = sw * 0.13f,
                                     cap = StrokeCap.Round
                                 )
-                                // Grip & pommel
                                 drawLine(
                                     color = hiltColor,
                                     start = Offset(sw * 0.50f, sh * 0.70f),
@@ -1231,7 +1298,7 @@ fun RightManaActionDial(
                                 imageVector = Icons.Default.Shield,
                                 contentDescription = "Hết Thẻ Tấn Công",
                                 tint = MutedSilver,
-                                modifier = Modifier.size(21.dp)
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
@@ -1258,107 +1325,294 @@ fun RightManaActionDial(
             }
         }
 
-        // BOTTOM ARC: Player Mana Counter (always X/10) + 10-slot Crystal Arc + Spell Mana Badge & 3 Gems
+        // BOTTOM ARC PLAQUE: Opaque obsidian + gold plate supporting up to 12 regular gems, Champion milestone bonus, and 3 violet Spell Mana gems
+        val playerPlaqueShape = RoundedCornerShape(topStart = 8.dp, bottomStart = 10.dp, topEnd = 4.dp, bottomEnd = 12.dp)
+        val spellMana = combat.playerSpellMana.coerceIn(0, 3)
+        val currentPips = combat.playerMana.coerceIn(0, playerTotalSlots)
+        val maxPips = maxOf(combat.playerMaxMana, currentPips).coerceIn(1, playerTotalSlots)
+        val milestoneBonus = combat.championMilestoneManaBonus
+
+        val previewInsufficient = manaPreview != null && !manaPreview.hasEnoughMana
+        val previewRegularStart = if (manaPreview != null && manaPreview.hasEnoughMana && manaPreview.regularManaUsed > 0) {
+            (currentPips - manaPreview.regularManaUsed).coerceAtLeast(0)
+        } else Int.MAX_VALUE
+        val previewSpellStart = if (manaPreview != null && manaPreview.hasEnoughMana && manaPreview.isSpellLike && manaPreview.spellManaUsed > 0) {
+            (spellMana - manaPreview.spellManaUsed).coerceAtLeast(0)
+        } else Int.MAX_VALUE
+
+        val plaqueBorderColor = when {
+            previewInsufficient -> CrimsonNexus.copy(alpha = previewPulseAlpha)
+            conversionVisual != null && conversionVisual.convertedToSpell > 0 -> SpellVioletBright
+            manaPreview != null -> HextechGoldBright.copy(alpha = previewPulseAlpha)
+            spellMana > 0 -> ManaBlue.copy(alpha = 0.85f)
+            else -> Color(0xFFC49742)
+        }
+
         Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = dialArcEndInset, bottom = dialVerticalInset),
+                .padding(end = plaqueEndInset, bottom = 1.dp)
+                .width(plaqueWidth)
+                .clip(playerPlaqueShape)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(Color(0xF5192334), Color(0xF50B111C))
+                    )
+                )
+                .border(1.3.dp, plaqueBorderColor, playerPlaqueShape)
+                .testTag("player_mana_plaque")
+                .then(plaqueTapModifier)
+                .padding(horizontal = 5.dp, vertical = 2.dp),
             horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+            verticalArrangement = Arrangement.spacedBy(1.dp)
         ) {
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
+                val playerManaFont = (statFontSize.value * 0.86f).coerceIn(10f, 13.5f).sp
                 Text(
-                    text = "${combat.playerMana}/10",
+                    text = "${combat.playerMana}/$playerTotalSlots",
                     style = tabularStatStyle(
-                        fontSize = (statFontSize.value * 0.96f).coerceIn(11.5f, 16f).sp,
-                        color = ParchmentWhite
+                        fontSize = playerManaFont,
+                        color = if (previewInsufficient) Color(0xFFFCA5A5) else ParchmentWhite
                     ),
+                    lineHeight = playerManaFont,
+                    maxLines = 1,
+                    softWrap = false,
                     modifier = Modifier.testTag("player_mana_text")
                 )
-                // 10-Slot Segmented Crystal Bar (lit blue -> unlocked empty -> locked dark)
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(1.dp),
+                    horizontalArrangement = Arrangement.spacedBy(playerCrystalGap),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val maxPips = combat.playerMaxMana.coerceIn(1, 10)
-                    val currentPips = combat.playerMana.coerceIn(0, maxPips)
-                    repeat(10) { idx ->
-                        val filled = idx < currentPips
-                        val unlockedEmpty = idx in currentPips until maxPips
+                    repeat(playerTotalSlots) { idx ->
+                        val isFilled = idx < currentPips
+                        val isRefilledInFrame = isFilled && (
+                            refillProgress >= 0.99f ||
+                                (idx + 0.5f) / maxOf(1, currentPips).toFloat() <= refillProgress
+                            )
+                        val isPreviewRegularSpend = isFilled && idx in previewRegularStart until currentPips
+                        val isSpentAnimating = idx in spentRegularIndices && spendAnimProgress > 0f
+                        val isUnlockedSpent = idx in currentPips until maxPips
+                        val isMilestoneSlot = idx < milestoneBonus && idx < maxPips
+
+                        val crystalBg = when {
+                            previewInsufficient && isFilled -> Brush.verticalGradient(
+                                listOf(Color(0xFFFECACA), CrimsonNexus, Color(0xFF991B1B))
+                            )
+                            isPreviewRegularSpend -> Brush.verticalGradient(
+                                listOf(Color(0xFFFEF9C3), HextechGoldBright, HextechGold)
+                            )
+                            isSpentAnimating -> Brush.verticalGradient(
+                                listOf(
+                                    Color(0xFFFEF08A).copy(alpha = spendAnimProgress),
+                                    Color(0xFF1F2D42)
+                                )
+                            )
+                            isFilled && isRefilledInFrame -> Brush.verticalGradient(
+                                listOf(Color(0xFF93E5FF), ManaBlue, Color(0xFF2563EB))
+                            )
+                            isFilled -> Brush.verticalGradient(
+                                listOf(Color(0xFF345480), Color(0xFF1D3252))
+                            )
+                            isUnlockedSpent -> Brush.verticalGradient(
+                                listOf(Color(0xFF1B273A), Color(0xFF0E1622))
+                            )
+                            else -> Brush.verticalGradient(
+                                listOf(Color(0xFF070B12), Color(0xFF04060B))
+                            )
+                        }
+                        val crystalBorder = when {
+                            previewInsufficient && isFilled -> Color(0xFFFDA4AF)
+                            isPreviewRegularSpend -> Color(0xFFFFFBEB)
+                            isSpentAnimating -> HextechGoldBright.copy(alpha = spendAnimProgress)
+                            isFilled && isRefilledInFrame -> if (isMilestoneSlot) HextechGoldBright else Color(0xFFE0F2FE)
+                            isUnlockedSpent -> if (isMilestoneSlot) HextechGoldDeep else Color(0xFF425978)
+                            else -> Color(0xFF1B2536)
+                        }
                         Box(
                             modifier = Modifier
-                                .width(3.dp)
-                                .height(9.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(
-                                    when {
-                                        filled -> Brush.verticalGradient(listOf(Color(0xFF93E5FF), ManaBlue, Color(0xFF2563EB)))
-                                        unlockedEmpty -> Brush.verticalGradient(listOf(Color(0xFF284166), Color(0xFF1A2B45)))
-                                        else -> Brush.verticalGradient(listOf(Color(0xFF0D1524), Color(0xFF060A12)))
+                                .width(playerCrystalW)
+                                .height(crystalHeight + 0.5.dp)
+                                .graphicsLayer {
+                                    val sc = when {
+                                        isPreviewRegularSpend -> 1.0f + 0.14f * previewPulseAlpha
+                                        isSpentAnimating -> 0.84f + 0.22f * spendAnimProgress
+                                        else -> 1f
                                     }
-                                )
-                                .border(
-                                    0.7.dp,
-                                    when {
-                                        filled -> Color(0xFFE0F2FE)
-                                        unlockedEmpty -> Color(0xFF7094C4)
-                                        else -> Color(0xFF26344A)
-                                    },
-                                    RoundedCornerShape(2.dp)
-                                )
+                                    scaleX = sc
+                                    scaleY = sc
+                                }
+                                .clip(RoundedCornerShape(1.8.dp))
+                                .background(crystalBg)
+                                .border(0.75.dp, crystalBorder, RoundedCornerShape(1.8.dp))
+                                .testTag("player_regular_mana_gem_$idx")
                         )
                     }
                 }
             }
 
-            // Recessed Spell Mana Badge + 3 Glowing Blue Gem Sockets (shifted inward & clearly legible)
-            val spellMana = combat.playerSpellMana.coerceIn(0, 3)
-            Surface(
-                modifier = Modifier
-                    .padding(end = 4.dp)
-                    .testTag("player_spell_mana_badge"),
-                shape = RoundedCornerShape(10.dp),
-                color = Color(0xEE091222),
-                border = BorderStroke(
-                    1.dp,
-                    if (spellMana > 0) ArcaneCyan.copy(alpha = 0.85f) else HextechGold.copy(alpha = 0.65f)
-                ),
-                shadowElevation = 4.dp
+            // Bottom Meta Row: Turn Max + Milestone Bonus (left) & Recessed Purple/Violet Spell Mana Badge + 3 Gems (right)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(3.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                val metaFont = (descFontSize.value * 0.70f).coerceIn(7.2f, 9.2f).sp
+                val metaLabel = buildString {
+                    append("T:$maxPips")
+                    if (milestoneBonus > 0) append(" ★+$milestoneBonus")
+                }
+                Text(
+                    text = metaLabel,
+                    fontFamily = JetBrainsMonoFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = metaFont,
+                    lineHeight = metaFont,
+                    color = if (milestoneBonus > 0) HextechGoldBright else MutedSilver,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.testTag("player_mana_turn_meta")
+                )
+
+                val spellBadgeBorder = when {
+                    conversionVisual != null && conversionVisual.convertedToSpell > 0 -> SpellVioletCore
+                    manaPreview != null && manaPreview.isSpellLike && manaPreview.spellManaUsed > 0 ->
+                        HextechGoldBright.copy(alpha = previewPulseAlpha)
+                    manaPreview != null && !manaPreview.isSpellLike ->
+                        Color(0xFF475569).copy(alpha = 0.65f)
+                    spellMana > 0 -> SpellVioletBright.copy(alpha = 0.90f)
+                    else -> HextechGold.copy(alpha = 0.65f)
+                }
+
+                Surface(
+                    modifier = Modifier
+                        .alpha(if (manaPreview != null && !manaPreview.isSpellLike) 0.72f else 1f)
+                        .testTag("player_spell_mana_badge"),
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xEE110C24),
+                    border = BorderStroke(1.dp, spellBadgeBorder)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 4.5.dp, vertical = 1.dp),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val spellFont = (descFontSize.value * 0.78f).coerceIn(8.5f, 10.5f).sp
+                        Text(
+                            text = "$spellMana",
+                            style = tabularStatStyle(
+                                spellFont,
+                                if (spellMana > 0) SpellVioletBright else ParchmentWhite.copy(alpha = 0.80f)
+                            ),
+                            lineHeight = spellFont,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.testTag("player_spell_mana_text")
+                        )
+                        Text(
+                            text = "/3",
+                            fontFamily = JetBrainsMonoFamily,
+                            fontSize = (spellFont.value * 0.78f).coerceAtLeast(7f).sp,
+                            lineHeight = spellFont,
+                            color = if (spellMana > 0) SpellVioletBorder.copy(alpha = 0.82f) else MutedSilver.copy(alpha = 0.70f),
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                        repeat(3) { idx ->
+                            val filled = idx < spellMana
+                            val isPreviewSpellSpend = filled && idx in previewSpellStart until spellMana
+                            val isSpellSpentAnim = idx in spentSpellIndices && spendAnimProgress > 0f
+                            val isNewlyConverted = conversionVisual != null &&
+                                conversionVisual.convertedToSpell > 0 &&
+                                idx in (spellMana - conversionVisual.convertedToSpell).coerceAtLeast(0) until spellMana
+
+                            val gemBrush = when {
+                                isPreviewSpellSpend -> Brush.radialGradient(
+                                    listOf(Color(0xFFFAF5FF), Color(0xFFD8B4FE), HextechGold)
+                                )
+                                isSpellSpentAnim -> Brush.radialGradient(
+                                    listOf(
+                                        Color(0xFFE9D5FF).copy(alpha = spendAnimProgress),
+                                        SpellVioletEmptyBot
+                                    )
+                                )
+                                filled -> Brush.radialGradient(
+                                    listOf(SpellVioletCore, SpellVioletBright, SpellVioletDeep)
+                                )
+                                else -> Brush.radialGradient(
+                                    listOf(SpellVioletEmptyTop, SpellVioletEmptyBot)
+                                )
+                            }
+                            val gemBorder = when {
+                                isPreviewSpellSpend -> HextechGoldBright
+                                isNewlyConverted -> Color(0xFFFAF5FF)
+                                isSpellSpentAnim -> SpellVioletBright.copy(alpha = spendAnimProgress)
+                                filled -> SpellVioletBorder
+                                else -> HextechGold.copy(alpha = 0.65f)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(7.5.dp)
+                                    .graphicsLayer {
+                                        val sc = when {
+                                            isPreviewSpellSpend -> 1f + 0.18f * previewPulseAlpha
+                                            isNewlyConverted -> 1.18f
+                                            isSpellSpentAnim -> 0.80f + 0.28f * spendAnimProgress
+                                            else -> 1f
+                                        }
+                                        scaleX = sc
+                                        scaleY = sc
+                                    }
+                                    .clip(CircleShape)
+                                    .background(gemBrush)
+                                    .border(1.dp, gemBorder, CircleShape)
+                                    .testTag("player_spell_mana_gem_$idx")
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Turn-End Conversion Floating Micro-Badge (non-blocking visual feedback)
+        AnimatedVisibility(
+            visible = conversionVisual != null,
+            enter = fadeIn(tween(150)),
+            exit = fadeOut(tween(260)),
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .offset(x = (-10).dp, y = (-2).dp)
+        ) {
+            conversionVisual?.let { conv ->
+                val msg = when {
+                    conv.convertedToSpell > 0 && conv.discardedExcess > 0 ->
+                        "+${conv.convertedToSpell} NL Phép (Bỏ ${conv.discardedExcess})"
+                    conv.convertedToSpell > 0 ->
+                        "+${conv.convertedToSpell} NL Phép"
+                    else ->
+                        "Phép 3/3 • Bỏ dư ${conv.discardedExcess}"
+                }
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = Color(0xF01C1238),
+                    border = BorderStroke(1.dp, SpellVioletBright),
+                    shadowElevation = 4.dp,
+                    modifier = Modifier.testTag("mana_conversion_toast")
                 ) {
                     Text(
-                        text = "$spellMana",
-                        style = tabularStatStyle(
-                            (descFontSize.value * 0.86f).coerceAtLeast(9.5f).sp,
-                            if (spellMana > 0) ArcaneCyan else ParchmentWhite.copy(alpha = 0.80f)
-                        ),
-                        modifier = Modifier.testTag("player_spell_mana_text")
+                        text = msg,
+                        fontFamily = JetBrainsMonoFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 8.sp,
+                        lineHeight = 10.sp,
+                        color = SpellVioletCore,
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
                     )
-                    repeat(3) { idx ->
-                        val filled = idx < spellMana
-                        Box(
-                            modifier = Modifier
-                                .size(9.5.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (filled) Brush.radialGradient(listOf(Color(0xFFD6FCFF), SpellManaCyan, Color(0xFF0284C7)))
-                                    else Brush.radialGradient(listOf(Color(0xFF1E324F), Color(0xFF0F1B2E)))
-                                )
-                                .border(
-                                    1.1.dp,
-                                    if (filled) Color(0xFFE0F9FF) else HextechGold.copy(alpha = 0.72f),
-                                    CircleShape
-                                )
-                                .testTag("player_spell_mana_gem_$idx")
-                        )
-                    }
                 }
             }
         }

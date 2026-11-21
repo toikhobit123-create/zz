@@ -1143,6 +1143,61 @@ class ExampleUnitTest {
     }
 
     @Test
+    fun `six star champion starts at max 3 mana without mana power and pow_manaflow ramps monotonically +1 per round`() {
+        val adv = AdventureCatalog.getAdventure("adv_demacia_outskirts")
+        val node = adv.mapNodes.first { it.id == "d_fight_1a" }
+        val anivia = CardCatalog.getChampion("champ_anivia")
+
+        val baseRun = RunState(
+            runId = "run_6star_cap",
+            adventureId = adv.id,
+            championId = "champ_anivia",
+            currentNodeId = node.id,
+            completedNodeIds = emptyList(),
+            currentNexusHp = 40,
+            maxNexusHp = 40,
+            gold = 300,
+            rerollsRemaining = 4,
+            revivesRemaining = 1,
+            activePowerIds = emptyList(),
+            runDeck = anivia.baseDeck
+        )
+        val sixStarNoRelic = ChampionLoadout(
+            championId = "champ_anivia",
+            isUnlocked = true,
+            starLevel = 6,
+            championLevel = 30,
+            equippedRelics = listOf(null, null, null)
+        )
+        val sixStarWithStarforged = sixStarNoRelic.copy(
+            equippedRelics = listOf("relic_ludens_tempest", "relic_starforged", "relic_archangels_staff")
+        )
+        val sixStarTripleStarforged = sixStarNoRelic.copy(
+            equippedRelics = listOf("relic_starforged", "relic_starforged", "relic_starforged")
+        )
+
+        // 6★ with NO mana power must start Round 1 with exactly 3 mana even with Starforged Gauntlets
+        listOf(sixStarNoRelic, sixStarWithStarforged, sixStarTripleStarforged).forEach { loadout ->
+            val encounter = CombatEngine.createEncounter(baseRun, loadout, adv, node)
+            assertEquals(3, encounter.playerMaxMana)
+            assertEquals(3, encounter.playerMana)
+        }
+
+        // With pow_manaflow (+1 mana power), 6★ starts at 4 mana and increases strictly by +1 per round
+        val powerRun = baseRun.copy(activePowerIds = listOf("pow_manaflow"))
+        var state = CombatEngine.createEncounter(powerRun, sixStarWithStarforged, adv, node)
+        assertEquals(4, state.playerMaxMana)
+        assertEquals(4, state.playerMana)
+
+        val expectedByRound = listOf(5, 6, 7, 8, 9, 10, 10)
+        expectedByRound.forEach { expectedMax ->
+            state = CombatEngine.advanceToNextRound(state, mutableListOf())
+            assertEquals(expectedMax, state.playerMaxMana)
+            assertEquals(expectedMax, state.playerMana)
+        }
+    }
+
+    @Test
     fun `champion roster only contains anivia stale db loadouts are cleaned and deck cards have unique art`() = runTest {
         assertEquals(listOf("champ_anivia"), CardCatalog.champions.map { it.id })
 
@@ -4232,6 +4287,125 @@ class ExampleUnitTest {
         assertTrue(savedAfterStart!!.runJson.contains("\"adventureId\":\"adv_demacia_outskirts\""))
         assertTrue(savedAfterStart.runJson.contains("\"runId\":\"$activeRunId\""))
     }
+
+    @Test
+    fun `previewManaPayment splits spell cost spell-first and blocks units from using spell mana`() {
+        val adv = AdventureCatalog.getAdventure("adv_demacia_outskirts")
+        val node = adv.mapNodes.first { it.id == "d_fight_1a" }
+        val spell4 = HandCardInstance(
+            instanceId = "hc_spell4",
+            template = CardCatalog.getCard("card_mystic_shot"),
+            effectiveCost = 4
+        )
+        val unit4 = HandCardInstance(
+            instanceId = "hc_unit4",
+            template = CardCatalog.getCard("card_cithria"),
+            effectiveCost = 4
+        )
+        val champ3 = HandCardInstance(
+            instanceId = "hc_champ3",
+            template = CardCatalog.getCard("card_anivia"),
+            effectiveCost = 3
+        )
+        val state = CombatState(
+            encounterNode = node,
+            adventure = adv,
+            championId = "champ_anivia",
+            starLevel = 5,
+            equippedRelics = emptyList(),
+            activePowers = emptyList(),
+            mutators = emptyList(),
+            playerNexusHp = 30,
+            playerMaxHp = 30,
+            enemyNexusHp = 20,
+            enemyMaxHp = 20,
+            playerMana = 3,
+            playerMaxMana = 3,
+            playerSpellMana = 2,
+            playerHand = listOf(spell4, unit4, champ3),
+            phase = CombatPhase.MAIN_ACTION_PHASE,
+            priorityHolder = PriorityHolder.PLAYER
+        )
+
+        val spellPreview = state.previewManaPayment(spell4)
+        assertTrue(spellPreview.isSpellLike)
+        assertEquals(2, spellPreview.spellManaUsed)
+        assertEquals(2, spellPreview.regularManaUsed)
+        assertEquals(0, spellPreview.spellManaRemaining)
+        assertEquals(1, spellPreview.regularManaRemaining)
+        assertTrue(spellPreview.hasEnoughMana)
+        assertTrue(spellPreview.canPlay)
+
+        val unitPreview = state.previewManaPayment(unit4)
+        assertFalse(unitPreview.isSpellLike)
+        assertEquals(0, unitPreview.spellManaUsed)
+        assertEquals(3, unitPreview.regularManaUsed)
+        assertEquals(1, unitPreview.regularShortfall)
+        assertFalse(unitPreview.hasEnoughMana)
+        assertFalse(unitPreview.canPlay)
+
+        val champPreview = state.previewManaPayment(champ3)
+        assertFalse(champPreview.isSpellLike)
+        assertEquals(0, champPreview.spellManaUsed)
+        assertEquals(3, champPreview.regularManaUsed)
+        assertEquals(0, champPreview.regularManaRemaining)
+        assertTrue(champPreview.hasEnoughMana)
+        assertTrue(champPreview.canPlay)
+    }
+
+    @Test
+    fun `combatState reports champion milestone bonus and supports up to 12 regular mana display slots`() {
+        val adv = AdventureCatalog.getAdventure("adv_demacia_outskirts")
+        val node = adv.mapNodes.first { it.id == "d_fight_1a" }
+        val base = CombatState(
+            encounterNode = node,
+            adventure = adv,
+            championId = "champ_anivia",
+            starLevel = 1,
+            equippedRelics = emptyList(),
+            activePowers = emptyList(),
+            mutators = emptyList(),
+            playerNexusHp = 30,
+            playerMaxHp = 30,
+            enemyNexusHp = 20,
+            enemyMaxHp = 20,
+            playerMana = 4,
+            playerMaxMana = 6
+        )
+        assertEquals(0, base.championMilestoneManaBonus)
+        assertEquals(10, base.displayRegularManaSlots)
+
+        val twoStar = base.copy(starLevel = 2)
+        assertEquals(1, twoStar.championMilestoneManaBonus)
+
+        val sixStarMax12 = base.copy(starLevel = 6, playerMana = 12, playerMaxMana = 12)
+        assertEquals(2, sixStarMax12.championMilestoneManaBonus)
+        assertEquals(12, sixStarMax12.displayRegularManaSlots)
+    }
+
+    @Test
+    fun `gameViewModel playCard prevents duplicate payment when called twice rapidly`() = runTest(testDispatcher) {
+        val repo = GameRepository(FakeGameDao(), testDispatcher)
+        repo.ensureSeeded()
+        val vm = GameViewModel(repo, aiStepDelayMs = 700L)
+        advanceUntilIdle()
+
+        vm.quickStartBattle()
+        runCurrent()
+
+        val initial = vm.uiState.value.combatState!!
+        val cheapCard = initial.playerHand.firstOrNull { initial.canPlayCard(it) }
+        assertNotNull(cheapCard)
+        val manaBefore = initial.playerMana + initial.playerSpellMana
+
+        // Rapid double click for same instanceId
+        vm.playCard(cheapCard!!.instanceId)
+        vm.playCard(cheapCard.instanceId)
+        runCurrent()
+
+        val after = vm.uiState.value.combatState!!
+        val expectedSpent = initial.effectivePlayCost(cheapCard)
+        assertEquals(manaBefore - expectedSpent, after.playerMana + after.playerSpellMana)
+        assertFalse(after.playerHand.any { it.instanceId == cheapCard.instanceId })
+    }
 }
-
-

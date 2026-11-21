@@ -209,7 +209,7 @@ object CardCatalog {
             id = "relic_starforged",
             name = "Găng Tay Rèn Sao",
             rarity = Rarity.EPIC,
-            description = "+1|+3 và +1 Năng Lượng Khởi Điểm.",
+            description = "+1|+3 và +1 Năng Lượng Khởi Điểm (tối đa 3 nếu chưa có Sức Mạnh thêm Năng Lượng).",
             bonusPower = 1,
             bonusHealth = 3,
             startingManaBonus = 1
@@ -235,7 +235,7 @@ object CardCatalog {
         PowerTemplate("pow_enfeebling_strike", "Đòn Đánh Suy Nhược", Rarity.COMMON, "Khi gây sát thương lên bài quân địch, giảm Sức Mạnh của nó bằng lượng sát thương đó."),
         PowerTemplate("pow_stabilize", "Ổn Định Không Gian", Rarity.EPIC, "Khi triệu hồi Tướng, triệu hồi thêm 1 bản sao Bóng Ma của Tướng đó."),
         PowerTemplate("pow_vitality", "Sinh Lực Dồi Dào", Rarity.RARE, "Bắt Đầu Trận Đấu & Đầu Vòng Đấu: Hồi 2 Máu cho Nhà Chính."),
-        PowerTemplate("pow_manaflow", "Dòng Chảy Năng Lượng Hoàn Mỹ", Rarity.LEGENDARY, "Đầu Vòng Đấu: Nhận +1 ngọc năng lượng tối đa trong vòng này (tối đa 10)."),
+        PowerTemplate("pow_manaflow", "Dòng Chảy Năng Lượng Hoàn Mỹ", Rarity.LEGENDARY, "Bắt Đầu Trận Đấu: Nhận +1 ngọc năng lượng (tối đa 10)."),
         PowerTemplate("pow_spell_fury", "Cuồng Nộ Pháp Thuật", Rarity.RARE, "Bài phép và Kỹ Năng của bạn gây thêm 1 sát thương.", spellSkillDamageBonus = 1)
     )
 

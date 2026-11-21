@@ -7,6 +7,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,8 +50,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -63,6 +66,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.example.engine.CombatPhase
 import com.example.engine.CombatState
+import com.example.engine.ManaPaymentPreview
 import com.example.model.HandCardInstance
 import com.example.model.UnitOnBoard
 import com.example.ui.components.CardTile
@@ -104,6 +108,245 @@ val defaultCombatEmotes = listOf(
 )
 
 @Composable
+fun ManaPaymentBreakdownBox(
+    preview: ManaPaymentPreview,
+    descFontSize: TextUnit,
+    modifier: Modifier = Modifier
+) {
+    val borderCol = when {
+        !preview.hasEnoughMana -> SemanticDanger
+        preview.isSpellLike && preview.spellManaUsed > 0 -> AccentSpellMana
+        preview.canPlay -> AccentIce.copy(alpha = 0.75f)
+        else -> BorderGoldMuted
+    }
+    val breakdownText = when {
+        !preview.hasEnoughMana -> buildString {
+            append(preview.blockReason ?: "Không đủ Năng Lượng")
+            if (!preview.isSpellLike) {
+                append(" • Không dùng NL Phép cho Quân")
+            }
+        }
+        preview.isSpellLike -> buildString {
+            val parts = mutableListOf<String>()
+            if (preview.spellManaUsed > 0) parts += "${preview.spellManaUsed} NL Phép"
+            if (preview.regularManaUsed > 0) parts += "${preview.regularManaUsed} NL Thường"
+            if (parts.isEmpty()) parts += "0 NL"
+            append("Trừ: ${parts.joinToString(" + ")}")
+            append(" • Còn ${preview.regularManaRemaining} NL Thường")
+        }
+        else -> "Chỉ trừ NL Thường: ${preview.regularManaUsed} NL • Còn ${preview.regularManaRemaining} NL Thường"
+    }
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("card_mana_breakdown_box"),
+        shape = RoundedCornerShape(GameRadius.control),
+        color = if (!preview.hasEnoughMana) Color(0xFF2B1318) else BgDeep,
+        border = BorderStroke(1.dp, borderCol)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = GameSpacing.sm, vertical = GameSpacing.xs),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (preview.isSpellLike) "Bài Phép (ưu tiên NL Phép)" else "Bài Quân / Tướng",
+                    fontFamily = PlusJakartaSansFamily,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = (descFontSize.value * 0.88f).coerceAtLeast(9.5f).sp,
+                    color = if (preview.isSpellLike) AccentSpellMana else AccentIce
+                )
+                Text(
+                    text = "Chi phí: ${preview.cardCost} NL",
+                    style = statNumericStyle(
+                        (descFontSize.value * 0.92f).coerceAtLeast(10f).sp,
+                        if (preview.hasEnoughMana) AccentGold else SemanticDanger
+                    )
+                )
+            }
+            Text(
+                text = breakdownText,
+                fontFamily = PlusJakartaSansFamily,
+                fontWeight = FontWeight.Medium,
+                fontSize = (descFontSize.value * 0.88f).coerceAtLeast(9.5f).sp,
+                color = if (!preview.hasEnoughMana) Color(0xFFFCA5A5) else TextPrimary,
+                modifier = Modifier.testTag("card_mana_breakdown_text")
+            )
+            if (preview.hasEnoughMana && !preview.canPlay && preview.blockReason != null) {
+                Text(
+                    text = preview.blockReason,
+                    fontFamily = PlusJakartaSansFamily,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = (descFontSize.value * 0.85f).coerceAtLeast(9f).sp,
+                    color = AccentGold
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun CardManaPreviewBanner(
+    cardName: String,
+    preview: ManaPaymentPreview,
+    descFontSize: TextUnit,
+    modifier: Modifier = Modifier
+) {
+    val summary = when {
+        !preview.hasEnoughMana -> "${preview.blockReason ?: "Không đủ Năng Lượng"}"
+        preview.isSpellLike -> buildString {
+            val parts = mutableListOf<String>()
+            if (preview.spellManaUsed > 0) parts += "${preview.spellManaUsed} Phép"
+            if (preview.regularManaUsed > 0) parts += "${preview.regularManaUsed} Thường"
+            if (parts.isEmpty()) parts += "0 NL"
+            append("Dùng ${parts.joinToString(" + ")} • Còn ${preview.regularManaRemaining} Thường")
+        }
+        else -> "Dùng ${preview.regularManaUsed} NL Thường • Còn ${preview.regularManaRemaining} Thường"
+    }
+    Surface(
+        modifier = modifier.testTag("card_mana_preview_banner"),
+        shape = RoundedCornerShape(10.dp),
+        color = if (!preview.hasEnoughMana) Color(0xEE2B1218) else Color(0xEE0F1B2E),
+        border = BorderStroke(
+            1.2.dp,
+            when {
+                !preview.hasEnoughMana -> SemanticDanger
+                preview.isSpellLike && preview.spellManaUsed > 0 -> AccentSpellMana
+                else -> AccentGold
+            }
+        ),
+        shadowElevation = 6.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "$cardName (${preview.cardCost} NL)",
+                fontFamily = PlusJakartaSansFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = descFontSize,
+                color = if (!preview.hasEnoughMana) Color(0xFFFCA5A5) else AccentGold
+            )
+            Text(
+                text = summary,
+                fontFamily = PlusJakartaSansFamily,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = (descFontSize.value * 0.90f).coerceAtLeast(9.5f).sp,
+                color = if (!preview.hasEnoughMana) Color(0xFFFECACA) else TextPrimary
+            )
+        }
+    }
+}
+
+@Composable
+fun ManaDetailDialog(
+    combat: CombatState,
+    onDismiss: () -> Unit
+) {
+    val milestoneBonus = combat.championMilestoneManaBonus
+    val star2Unlocked = combat.starLevel >= 2
+    val star5Unlocked = combat.starLevel >= 5
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag("mana_detail_dialog"),
+        containerColor = SurfaceBase,
+        shape = RoundedCornerShape(GameRadius.panel),
+        title = {
+            Text(
+                text = "Chi tiết Năng Lượng — Vòng ${combat.round}",
+                fontFamily = CinzelFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 17.sp,
+                color = AccentGold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(GameSpacing.sm)) {
+                Surface(
+                    shape = RoundedCornerShape(GameRadius.control),
+                    color = BgDeep,
+                    border = BorderStroke(1.dp, AccentIce.copy(alpha = 0.55f))
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(GameSpacing.sm),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Năng Lượng Thường: ${combat.playerMana} / ${combat.playerMaxMana} (Tối đa vòng: ${combat.playerMaxMana}, Khung: ${combat.displayRegularManaSlots})",
+                            fontFamily = PlusJakartaSansFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.5.sp,
+                            color = AccentIce
+                        )
+                        Text(
+                            text = "Thưởng Chòm Sao Tướng: +$milestoneBonus NL khởi đầu (2★: ${if (star2Unlocked) "+1 đã mở" else "Chưa mở"} • 5★: ${if (star5Unlocked) "+1 đã mở" else "Chưa mở"})",
+                            fontFamily = InterFontFamily,
+                            fontSize = 11.5.sp,
+                            color = if (milestoneBonus > 0) AccentGold else TextSecondary
+                        )
+                        Text(
+                            text = "Dùng cho mọi lá bài. Lượng còn dư cuối vòng tự chuyển thành NL Phép (tối đa 3).",
+                            fontFamily = InterFontFamily,
+                            fontSize = 11.sp,
+                            color = TextSecondary
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(GameRadius.control),
+                    color = BgDeep,
+                    border = BorderStroke(1.dp, AccentSpellMana.copy(alpha = 0.65f))
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(GameSpacing.sm),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Năng Lượng Phép: ${combat.playerSpellMana} / 3",
+                            fontFamily = PlusJakartaSansFamily,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.5.sp,
+                            color = AccentSpellMana
+                        )
+                        Text(
+                            text = "Bảo lưu qua các vòng. Chỉ dùng cho Bài Phép / Lời Nguyền — không bao giờ trả cho Bài Quân hoặc Tướng.",
+                            fontFamily = InterFontFamily,
+                            fontSize = 11.sp,
+                            color = TextSecondary
+                        )
+                    }
+                }
+
+                Text(
+                    text = "Đối thủ (${combat.encounterNode.enemyName}): ${combat.enemyMana}/${combat.enemyMaxMana} NL Thường • ${combat.enemySpellMana}/3 NL Phép",
+                    fontFamily = InterFontFamily,
+                    fontSize = 11.5.sp,
+                    color = TextSecondary
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Đóng", fontFamily = PlusJakartaSansFamily, fontWeight = FontWeight.SemiBold, color = AccentGold)
+            }
+        }
+    )
+}
+
+@Composable
 fun HandCardInspectOverlay(
     card: HandCardInstance,
     canPlay: Boolean,
@@ -117,28 +360,37 @@ fun HandCardInspectOverlay(
     padV: Dp,
     descFontSize: TextUnit,
     onPlay: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    manaPreview: ManaPaymentPreview? = null
 ) {
+    val resolvedCanPlay = canPlay && (manaPreview?.canPlay ?: true)
     Box(
         modifier = Modifier
             .fillMaxSize()
             .zIndex(60f)
-            .clickable(onClick = onDismiss)
+            .pointerInput(onDismiss) { detectTapGestures { onDismiss() } }
     ) {
         Surface(
             modifier = Modifier
                 .align(Alignment.Center)
                 .offset(y = offsetY)
                 .widthIn(min = minWidth, max = maxWidth)
-                .clickable(enabled = false, onClick = {}),
+                .pointerInput(Unit) { detectTapGestures {} },
             shape = RoundedCornerShape(GameRadius.panel),
             color = SurfaceOverlay,
-            border = BorderStroke(1.dp, if (canPlay) AccentIce else BorderGoldMuted),
+            border = BorderStroke(
+                1.dp,
+                when {
+                    manaPreview != null && !manaPreview.hasEnoughMana -> SemanticDanger
+                    resolvedCanPlay -> AccentIce
+                    else -> BorderGoldMuted
+                }
+            ),
             shadowElevation = 0.dp
         ) {
             Column(
                 modifier = Modifier.padding(GameSpacing.md),
-                verticalArrangement = Arrangement.spacedBy(GameSpacing.md)
+                verticalArrangement = Arrangement.spacedBy(GameSpacing.sm)
             ) {
                 CardTile(
                     template = card.template,
@@ -148,15 +400,26 @@ fun HandCardInspectOverlay(
                     attachedItems = card.attachedItems,
                     extraKeywords = card.extraKeywords,
                     isFleeting = card.isFleeting,
-                    playable = canPlay
+                    playable = resolvedCanPlay
                 )
+                if (manaPreview != null) {
+                    ManaPaymentBreakdownBox(
+                        preview = manaPreview,
+                        descFontSize = descFontSize
+                    )
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(GameSpacing.sm)
                 ) {
                     if (!detailOnly) {
+                        val playButtonLabel = when {
+                            resolvedCanPlay -> "Ra bài ($effectiveCost NL)"
+                            manaPreview != null && !manaPreview.hasEnoughMana -> "Không đủ Năng Lượng"
+                            else -> "Không thể ra bài"
+                        }
                         Button(
-                            enabled = canPlay,
+                            enabled = resolvedCanPlay,
                             onClick = onPlay,
                             modifier = Modifier
                                 .weight(1f)
@@ -164,14 +427,14 @@ fun HandCardInspectOverlay(
                                 .testTag("confirm_play_card_button"),
                             shape = RoundedCornerShape(GameRadius.control),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (canPlay) AccentGold else SurfaceElevated,
+                                containerColor = if (resolvedCanPlay) AccentGold else SurfaceElevated,
                                 contentColor = BgDeep,
-                                disabledContainerColor = SurfaceElevated,
-                                disabledContentColor = TextSecondary
+                                disabledContainerColor = if (manaPreview != null && !manaPreview.hasEnoughMana) Color(0xFF3A1A20) else SurfaceElevated,
+                                disabledContentColor = if (manaPreview != null && !manaPreview.hasEnoughMana) Color(0xFFFCA5A5) else TextSecondary
                             )
                         ) {
                             Text(
-                                text = if (canPlay) "Ra bài ($effectiveCost NL)" else "Không thể ra bài",
+                                text = playButtonLabel,
                                 fontFamily = PlusJakartaSansFamily,
                                 fontSize = descFontSize,
                                 fontWeight = FontWeight.SemiBold

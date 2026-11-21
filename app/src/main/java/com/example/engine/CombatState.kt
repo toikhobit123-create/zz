@@ -138,6 +138,23 @@ data class CombatState(
     val totalEnemyManaAvailable: Int
         get() = enemyMana + enemySpellMana
 
+    /**
+     * Champion Power milestone starting mana bonus:
+     * +1 at 2★ (Power 2) and +1 at 5★ (Power 5).
+     */
+    val championMilestoneManaBonus: Int
+        get() = (if (starLevel >= 2) 1 else 0) + (if (starLevel >= 5) 1 else 0)
+
+    /**
+     * Regular mana gem capacity shown in UI: 10 base slots, expanding up to 12
+     * when total regular mana (with milestone bonus / state) exceeds 10.
+     */
+    val displayRegularManaSlots: Int
+        get() = maxOf(10, playerMaxMana, playerMana).coerceIn(10, 12)
+
+    val displayEnemyManaSlots: Int
+        get() = maxOf(10, enemyMaxMana, enemyMana).coerceIn(10, 12)
+
     fun canPlayCard(card: HandCardInstance): Boolean = CombatEngine.canPlayCard(this, card)
 
     fun effectivePlayCost(card: HandCardInstance): Int {
@@ -157,4 +174,70 @@ data class CombatState(
         }
         return maxOf(0, cost)
     }
+
+    fun previewManaPayment(card: HandCardInstance): ManaPaymentPreview {
+        val cost = effectivePlayCost(card)
+        val isSpellLike = card.template.type == CardType.SPELL || card.template.type == CardType.CURSE
+        val spellAvail = playerSpellMana.coerceIn(0, 3)
+        val regularAvail = playerMana.coerceAtLeast(0)
+
+        val spellUsed = if (isSpellLike) minOf(spellAvail, cost) else 0
+        val remainingCost = cost - spellUsed
+        val regularUsed = minOf(regularAvail, remainingCost)
+        val shortfall = (remainingCost - regularUsed).coerceAtLeast(0)
+        val hasEnoughMana = shortfall == 0
+        val canPlay = CombatEngine.canPlayCard(this, card)
+
+        val isUnitLike = card.template.type == CardType.UNIT ||
+            card.template.type == CardType.CHAMPION ||
+            card.template.type == CardType.LANDMARK
+        val isInCombat = phase == CombatPhase.COMBAT_DECLARE_ATTACK_PHASE ||
+            phase == CombatPhase.COMBAT_DECLARE_BLOCK_PHASE
+
+        val blockReason = when {
+            !hasEnoughMana -> if (isSpellLike) {
+                "Không đủ Năng Lượng (thiếu $shortfall NL)"
+            } else {
+                "Không đủ NL Thường (thiếu $shortfall NL)"
+            }
+            canPlay -> null
+            priorityHolder != PriorityHolder.PLAYER -> "Chờ lượt của đối thủ"
+            isUnitLike && playerBoard.size >= 6 -> "Hàng chờ đã đầy (6/6)"
+            card.template.type == CardType.EQUIPMENT && playerBoard.isEmpty() -> "Cần có đồng minh trên bàn"
+            card.template.spellSpeed == SpellSpeed.FAST && isInCombat && playerFastSpellUsedInCombat ->
+                "Mỗi đợt giao tranh chỉ dùng 1 Phép Nhanh"
+            card.template.spellSpeed == SpellSpeed.FOCUS && (isInCombat || spellStack.isNotEmpty()) ->
+                "Phép Tập Trung chỉ dùng ngoài giao tranh"
+            card.template.spellSpeed == SpellSpeed.SLOW && (isInCombat || spellStack.isNotEmpty()) ->
+                "Phép Chậm chỉ dùng ngoài giao tranh"
+            else -> "Không thể ra bài lúc này"
+        }
+
+        return ManaPaymentPreview(
+            cardCost = cost,
+            isSpellLike = isSpellLike,
+            spellManaUsed = spellUsed,
+            regularManaUsed = regularUsed,
+            spellManaRemaining = (spellAvail - spellUsed).coerceIn(0, 3),
+            regularManaRemaining = (regularAvail - regularUsed).coerceAtLeast(0),
+            regularShortfall = shortfall,
+            hasEnoughMana = hasEnoughMana,
+            canPlay = canPlay,
+            blockReason = blockReason
+        )
+    }
 }
+
+data class ManaPaymentPreview(
+    val cardCost: Int,
+    val isSpellLike: Boolean,
+    val spellManaUsed: Int,
+    val regularManaUsed: Int,
+    val spellManaRemaining: Int,
+    val regularManaRemaining: Int,
+    val regularShortfall: Int,
+    val hasEnoughMana: Boolean,
+    val canPlay: Boolean,
+    val blockReason: String?
+)
+
